@@ -4,51 +4,10 @@ const wsStatus = document.getElementById("wsStatus");
 const pinGrid = document.getElementById("pinGrid");
 const pinFilter = document.getElementById("pinFilter");
 const pinSearch = document.getElementById("pinSearch");
+const boardLabel = document.getElementById("boardLabel");
 let socket = null;
 
-const pins = [
-	{ number: 1, label: "GND", category: "power" },
-	{ number: 2, label: "3V3", category: "power" },
-	{ number: 3, label: "EN", category: "system" },
-	{ number: 4, label: "IO0", category: "system", gpio: 0 },
-	{ number: 5, label: "IO1", category: "digital", gpio: 1 },
-	{ number: 6, label: "IO2", category: "digital", gpio: 2 },
-	{ number: 7, label: "IO3", category: "digital", gpio: 3 },
-	{ number: 8, label: "IO4", category: "digital", gpio: 4 },
-	{ number: 9, label: "IO5", category: "digital", gpio: 5 },
-	{ number: 10, label: "IO6", category: "digital", gpio: 6 },
-	{ number: 11, label: "IO7", category: "digital", gpio: 7 },
-	{ number: 12, label: "IO8", category: "digital", gpio: 8 },
-	{ number: 13, label: "IO9", category: "digital", gpio: 9 },
-	{ number: 14, label: "IO10", category: "digital", gpio: 10 },
-	{ number: 15, label: "IO11", category: "digital", gpio: 11 },
-	{ number: 16, label: "IO12", category: "digital", gpio: 12 },
-	{ number: 17, label: "IO13", category: "digital", gpio: 13 },
-	{ number: 18, label: "IO14", category: "digital", gpio: 14 },
-	{ number: 19, label: "IO15", category: "digital", gpio: 15 },
-	{ number: 20, label: "IO16", category: "digital", gpio: 16 },
-	{ number: 21, label: "IO17", category: "digital", gpio: 17 },
-	{ number: 22, label: "IO18", category: "digital", gpio: 18 },
-	{ number: 23, label: "IO19", category: "digital", gpio: 19 },
-	{ number: 24, label: "IO20", category: "digital", gpio: 20 },
-	{ number: 25, label: "IO21", category: "digital", gpio: 21 },
-	{ number: 26, label: "IO26", category: "digital", gpio: 26 },
-	{ number: 27, label: "IO33", category: "digital", gpio: 33 },
-	{ number: 28, label: "IO34", category: "digital", gpio: 34 },
-	{ number: 29, label: "IO35", category: "input", gpio: 35 },
-	{ number: 30, label: "IO36", category: "digital", gpio: 36 },
-	{ number: 31, label: "IO37", category: "input", gpio: 37 },
-	{ number: 32, label: "IO38", category: "digital", gpio: 38 },
-	{ number: 33, label: "IO39", category: "digital", gpio: 39 },
-	{ number: 34, label: "IO40", category: "digital", gpio: 40 },
-	{ number: 35, label: "IO41", category: "digital", gpio: 41 },
-	{ number: 36, label: "IO42", category: "digital", gpio: 42 },
-	{ number: 37, label: "IO43", category: "digital", gpio: 43 },
-	{ number: 38, label: "IO44", category: "digital", gpio: 44 },
-	{ number: 39, label: "IO45", category: "digital", gpio: 45 },
-	{ number: 40, label: "IO46", category: "digital", gpio: 46 },
-	{ number: 41, label: "GND", category: "power" },
-];
+let pins = [];
 
 const pinRuntime = new Map();
 
@@ -78,9 +37,7 @@ function getLiveBadge(gpio) {
 }
 
 function getCategoryBadge(category) {
-	if (category === "power") return '<span class="badge badge-neutral">Power</span>';
 	if (category === "system") return '<span class="badge badge-secondary">System</span>';
-	if (category === "input") return '<span class="badge badge-accent">Live Input</span>';
 	return '<span class="badge badge-primary">Digital I/O</span>';
 }
 
@@ -99,6 +56,9 @@ function getActionButton(pin, runtime) {
 	}
 	if (!runtime) {
 		return `<button class="btn btn-sm btn-outline" disabled data-gpio="${pin.gpio}">Wait</button>`;
+	}
+	if (!runtime.canControl) {
+		return `<button class="btn btn-sm btn-outline" disabled data-gpio="${pin.gpio}">Reserved</button>`;
 	}
 	if (runtime.mode !== "output") {
 		return `<button class="btn btn-sm btn-outline" disabled data-gpio="${pin.gpio}">Set Output</button>`;
@@ -132,7 +92,7 @@ function renderPins() {
 			const runtime = pin.gpio !== undefined ? pinRuntime.get(pin.gpio) : null;
 			const gpioText = pin.label.startsWith("IO") ? `GPIO ${pin.label.slice(2)}` : pin.label;
 			const selectedMode = runtime?.mode ?? "input";
-			const modeDisabled = pin.gpio === undefined || !isConnected();
+			const modeDisabled = pin.gpio === undefined || !isConnected() || !runtime?.canControl;
 			return `
 				<div class="pin-card">
 					<div class="pin-card-head">
@@ -195,6 +155,9 @@ function connectWebSocket() {
 		try {
 			const data = JSON.parse(event.data);
 			if (data.type === "snapshot" && Array.isArray(data.pins)) {
+				if (typeof data.target === "string" && boardLabel) {
+					boardLabel.textContent = data.target;
+				}
 				for (const item of data.pins) {
 					if (typeof item.gpio !== "number") continue;
 					pinRuntime.set(item.gpio, {
@@ -203,6 +166,15 @@ function connectWebSocket() {
 						canControl: item.canControl !== false,
 					});
 				}
+				pins = data.pins
+					.filter((item) => typeof item.gpio === "number")
+					.map((item) => ({
+						number: item.gpio,
+						label: `IO${item.gpio}`,
+						category: item.canControl === false ? "system" : "digital",
+						gpio: item.gpio,
+					}))
+					.sort((a, b) => a.gpio - b.gpio);
 			}
 			renderPins();
 		} catch {

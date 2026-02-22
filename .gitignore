@@ -13,6 +13,10 @@
 *.bak
 *.tmp
 
+#secrets
+**/*.secret
+
+
 # Log files
 *.log
 

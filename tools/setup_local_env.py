@@ -83,10 +83,13 @@ def detect_local_values() -> dict[str, str | None]:
 
     serial_port = pick_first_existing(
         [
+            "/dev/ttyACM*",
+            "/dev/ttyUSB*",
             "/dev/cu.usbmodem*",
             "/dev/cu.SLAB_USBtoUART*",
             "/dev/cu.wchusbserial*",
             "/dev/cu.usbserial*",
+            "/dev/serial/by-id/*",
         ]
     )
 

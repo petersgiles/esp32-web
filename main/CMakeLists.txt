@@ -29,6 +29,14 @@ string(REPLACE "\"" "\\\"" APP_WIFI_SSID_ESCAPED "${APP_WIFI_SSID_ESCAPED}")
 string(REPLACE "\\" "\\\\" APP_WIFI_PASSWORD_ESCAPED "${APP_WIFI_PASSWORD}")
 string(REPLACE "\"" "\\\"" APP_WIFI_PASSWORD_ESCAPED "${APP_WIFI_PASSWORD_ESCAPED}")
 
+set(GENERATED_INCLUDE_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
+file(MAKE_DIRECTORY ${GENERATED_INCLUDE_DIR})
+configure_file(
+    ${COMPONENT_DIR}/app_wifi_config.h.in
+    ${GENERATED_INCLUDE_DIR}/app_wifi_config.h
+    @ONLY
+)
+
 execute_process(
     COMMAND ${CMAKE_COMMAND} -E make_directory ${WEB_DIST_DIR}
 )
@@ -44,14 +52,9 @@ endif()
 
 idf_component_register(
     SRCS "main.cpp"
-    INCLUDE_DIRS "."
+    INCLUDE_DIRS "." ${GENERATED_INCLUDE_DIR}
     EMBED_TXTFILES
         "web_dist/index.html"
         "web_dist/styles.css"
         "web_dist/app.js"
-)
-
-target_compile_definitions(${COMPONENT_LIB} PRIVATE
-    APP_WIFI_SSID="${APP_WIFI_SSID_ESCAPED}"
-    APP_WIFI_PASSWORD="${APP_WIFI_PASSWORD_ESCAPED}"
 )

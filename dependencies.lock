@@ -498,5 +498,5 @@ direct_dependencies:
 - esp32async/espasyncwebserver
 - idf
 manifest_hash: 8e73e06d452904d889648333985a766d2763fd819a9d21d6d943f9efc81a0bfa
-target: esp32s3
+target: esp32c6
 version: 2.0.0

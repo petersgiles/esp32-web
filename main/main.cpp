@@ -3,9 +3,8 @@
 #include "WiFi.h"
 #include "app_wifi_config.h"
 #include "esp_log.h"
-#include "soc/soc_caps.h"
-#include <cstdint>
-#include <vector>
+#include "internal/board_profile.h"
+#include "internal/gpio_runtime.h"
 
 static const char *TAG = "web";
 static const char *WIFI_SSID = APP_WIFI_SSID_VALUE;
@@ -15,108 +14,7 @@ static uint8_t last_disconnect_reason = 0;
 static AsyncWebServer server(80);
 static AsyncWebSocket ws("/ws");
 
-static const char *active_target_name()
-{
-#if CONFIG_IDF_TARGET_ESP32C6
-	return "esp32c6";
-#elif CONFIG_IDF_TARGET_ESP32S3
-	return "esp32s3";
-#elif CONFIG_IDF_TARGET_ESP32
-	return "esp32";
-#else
-	return "unknown";
-#endif
-}
-
-enum class PinModeSetting
-{
-	Input,
-	InputPullup,
-	Output
-};
-
-struct PinRuntime
-{
-	uint8_t gpio;
-	PinModeSetting mode;
-	bool value;
-	bool canControl;
-};
-
-static bool is_protected_gpio(uint8_t gpio)
-{
-#if CONFIG_IDF_TARGET_ESP32C6
-	if (
-		gpio == 12 || gpio == 13 ||
-		gpio == 16 || gpio == 17 ||
-		gpio == 24 || gpio == 25 || gpio == 26 || gpio == 27 || gpio == 28 || gpio == 29 || gpio == 30)
-	{
-		return true;
-	}
-#endif
-#if CONFIG_IDF_TARGET_ESP32S3
-	if (gpio == 19 || gpio == 20)
-	{
-		return true;
-	}
-#endif
-	return false;
-}
-
-static std::vector<PinRuntime> create_pin_states()
-{
-	std::vector<PinRuntime> pins;
-	const uint8_t max_gpio = static_cast<uint8_t>(SOC_GPIO_PIN_COUNT < 64 ? SOC_GPIO_PIN_COUNT : 64);
-	const uint64_t valid_mask = static_cast<uint64_t>(SOC_GPIO_VALID_GPIO_MASK);
-	pins.reserve(max_gpio);
-
-	for (uint8_t gpio = 0; gpio < max_gpio; ++gpio)
-	{
-		if ((valid_mask & (UINT64_C(1) << gpio)) == 0)
-		{
-			continue;
-		}
-
-		pins.push_back({gpio, PinModeSetting::Input, false, !is_protected_gpio(gpio)});
-	}
-
-	return pins;
-}
-
 static std::vector<PinRuntime> pin_states = create_pin_states();
-
-static void log_pin_map_summary()
-{
-	String usable;
-	String reserved;
-	for (const auto &pin : pin_states)
-	{
-		String entry = String(pin.gpio);
-		if (pin.canControl)
-		{
-			if (!usable.isEmpty())
-			{
-				usable += ",";
-			}
-			usable += entry;
-		}
-		else
-		{
-			if (!reserved.isEmpty())
-			{
-				reserved += ",";
-			}
-			reserved += entry;
-		}
-	}
-
-	ESP_LOGI(TAG, "Target=%s GPIO total=%u", active_target_name(), static_cast<unsigned>(pin_states.size()));
-	ESP_LOGI(TAG, "GPIO controllable: %s", usable.c_str());
-	if (!reserved.isEmpty())
-	{
-		ESP_LOGI(TAG, "GPIO reserved: %s", reserved.c_str());
-	}
-}
 
 extern const uint8_t web_index_html_start[] asm("_binary_index_html_start");
 extern const uint8_t web_index_html_end[] asm("_binary_index_html_end");
@@ -135,52 +33,6 @@ static void send_embedded(AsyncWebServerRequest *request, const char *content_ty
 	request->send(200, content_type, start, length);
 }
 
-static const char *mode_to_string(PinModeSetting mode)
-{
-	switch (mode)
-	{
-	case PinModeSetting::Input:
-		return "input";
-	case PinModeSetting::InputPullup:
-		return "input_pullup";
-	case PinModeSetting::Output:
-		return "output";
-	default:
-		return "input";
-	}
-}
-
-static PinRuntime *find_pin(uint8_t gpio)
-{
-	for (auto &pin : pin_states)
-	{
-		if (pin.gpio == gpio)
-		{
-			return &pin;
-		}
-	}
-	return nullptr;
-}
-
-static void apply_mode(PinRuntime &pin)
-{
-	if (pin.mode == PinModeSetting::Input)
-	{
-		pinMode(pin.gpio, INPUT);
-		return;
-	}
-	if (pin.mode == PinModeSetting::InputPullup)
-	{
-		pinMode(pin.gpio, INPUT_PULLUP);
-		return;
-	}
-	pinMode(pin.gpio, OUTPUT);
-}
-
-static bool read_pin_level(uint8_t gpio)
-{
-	return digitalRead(gpio) == HIGH;
-}
 
 static void send_ws_error(AsyncWebSocketClient *client, const char *message)
 {
@@ -322,25 +174,6 @@ static bool parse_mode_field(const String &message, String *mode)
 	return true;
 }
 
-static bool update_pin_values()
-{
-	bool changed = false;
-	for (auto &pin : pin_states)
-	{
-		if (!pin.canControl)
-		{
-			continue;
-		}
-		const bool new_value = read_pin_level(pin.gpio);
-		if (new_value != pin.value)
-		{
-			pin.value = new_value;
-			changed = true;
-		}
-	}
-	return changed;
-}
-
 static void handle_ws_message(AsyncWebSocketClient *client, uint8_t *data, size_t len)
 {
 	String message;
@@ -360,7 +193,7 @@ static void handle_ws_message(AsyncWebSocketClient *client, uint8_t *data, size_
 			return;
 		}
 
-		PinRuntime *pin = find_pin(gpio);
+		PinRuntime *pin = find_pin(pin_states, gpio);
 		if (pin == nullptr)
 		{
 			send_ws_error(client, "Unsupported GPIO");
@@ -413,7 +246,7 @@ static void handle_ws_message(AsyncWebSocketClient *client, uint8_t *data, size_
 			return;
 		}
 
-		PinRuntime *pin = find_pin(gpio);
+		PinRuntime *pin = find_pin(pin_states, gpio);
 		if (pin == nullptr)
 		{
 			send_ws_error(client, "Unsupported GPIO");
@@ -480,7 +313,7 @@ extern "C" void app_main(void)
 	const IPAddress sta_ip = WiFi.localIP();
 	ESP_LOGI(TAG, "Wi-Fi connected");
 	ESP_LOGI(TAG, "Open http://%s", sta_ip.toString().c_str());
-	log_pin_map_summary();
+	log_pin_map_summary(TAG, pin_states, active_target_name());
 
 	for (auto &pin : pin_states)
 	{
@@ -564,7 +397,7 @@ extern "C" void app_main(void)
 	{
 		ws.cleanupClients();
 
-		const bool pin_changed = update_pin_values();
+		const bool pin_changed = update_pin_values(pin_states);
 		const uint32_t now = millis();
 		if (pin_changed || (now - last_snapshot_ms) >= 700)
 		{

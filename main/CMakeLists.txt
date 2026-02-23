@@ -51,7 +51,10 @@ if(NOT WEB_MINIFY_RESULT EQUAL 0)
 endif()
 
 idf_component_register(
-    SRCS "main.cpp"
+    SRCS
+        "main.cpp"
+        "internal/board_profile.cpp"
+        "internal/gpio_runtime.cpp"
     INCLUDE_DIRS "." ${GENERATED_INCLUDE_DIR}
     EMBED_TXTFILES
         "web_dist/index.html"

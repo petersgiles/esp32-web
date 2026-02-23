@@ -10,6 +10,49 @@ let socket = null;
 let pins = [];
 
 const pinRuntime = new Map();
+const pendingModes = new Map();
+const MODE_PENDING_TTL_MS = 2000;
+
+function getEffectiveMode(gpio, runtime) {
+	if (!runtime || gpio === undefined) {
+		return runtime?.mode ?? "input";
+	}
+
+	const pending = pendingModes.get(gpio);
+	if (!pending) {
+		return runtime.mode;
+	}
+
+	if (Date.now() > pending.expiresAt) {
+		pendingModes.delete(gpio);
+		return runtime.mode;
+	}
+
+	if (runtime.mode === pending.mode) {
+		pendingModes.delete(gpio);
+		return runtime.mode;
+	}
+
+	return pending.mode;
+}
+
+function isModePending(gpio, runtime) {
+	if (gpio === undefined || !runtime) {
+		return false;
+	}
+
+	const pending = pendingModes.get(gpio);
+	if (!pending) {
+		return false;
+	}
+
+	if (Date.now() > pending.expiresAt || runtime.mode === pending.mode) {
+		pendingModes.delete(gpio);
+		return false;
+	}
+
+	return true;
+}
 
 function isConnected() {
 	return socket && socket.readyState === WebSocket.OPEN;
@@ -37,7 +80,7 @@ function getLiveBadge(gpio) {
 }
 
 function getCategoryBadge(category) {
-	if (category === "system") return '<span class="badge badge-secondary">System</span>';
+	if (category === "reserved") return '<span class="badge badge-secondary">Reserved</span>';
 	return '<span class="badge badge-primary">Digital I/O</span>';
 }
 
@@ -74,12 +117,15 @@ function renderPins() {
 	const query = (pinSearch?.value ?? "").trim().toLowerCase();
 
 	const filteredPins = pins.filter((pin) => {
-		const categoryMatch = filterValue === "all" || pin.category === filterValue;
+		const availabilityMatch =
+			filterValue === "all" ||
+			(filterValue === "available" && pin.canControl) ||
+			(filterValue === "reserved" && !pin.canControl);
 		const searchMatch =
 			query.length === 0 ||
 			pin.label.toLowerCase().includes(query) ||
 			String(pin.number).includes(query);
-		return categoryMatch && searchMatch;
+		return availabilityMatch && searchMatch;
 	});
 
 	if (filteredPins.length === 0) {
@@ -91,7 +137,8 @@ function renderPins() {
 		.map((pin) => {
 			const runtime = pin.gpio !== undefined ? pinRuntime.get(pin.gpio) : null;
 			const gpioText = pin.label.startsWith("IO") ? `GPIO ${pin.label.slice(2)}` : pin.label;
-			const selectedMode = runtime?.mode ?? "input";
+			const selectedMode = getEffectiveMode(pin.gpio, runtime);
+			const pendingMode = isModePending(pin.gpio, runtime);
 			const modeDisabled = pin.gpio === undefined || !isConnected() || !runtime?.canControl;
 			return `
 				<div class="pin-card">
@@ -103,6 +150,7 @@ function renderPins() {
 						${getCategoryBadge(pin.category)}
 						<span class="badge badge-outline">${gpioText}</span>
 						<span class="badge badge-ghost">Mode: ${modeLabel(selectedMode)}</span>
+						${pendingMode ? '<span class="badge badge-info">Updating…</span>' : ""}
 					</div>
 					<div class="pin-card-controls">
 						<select class="select select-bordered select-sm" data-action="mode" data-gpio="${pin.gpio ?? ""}" aria-label="Mode for ${pin.label}" ${modeDisabled ? "disabled" : ""}>
@@ -154,29 +202,62 @@ function connectWebSocket() {
 	socket.addEventListener("message", (event) => {
 		try {
 			const data = JSON.parse(event.data);
+			let shouldRender = false;
 			if (data.type === "snapshot" && Array.isArray(data.pins)) {
 				if (typeof data.target === "string" && boardLabel) {
 					boardLabel.textContent = data.target;
 				}
-				for (const item of data.pins) {
-					if (typeof item.gpio !== "number") continue;
-					pinRuntime.set(item.gpio, {
-						mode: typeof item.mode === "string" ? item.mode : "input",
-						value: Boolean(item.value),
-						canControl: item.canControl !== false,
-					});
-				}
-				pins = data.pins
+
+				const nextPins = data.pins
 					.filter((item) => typeof item.gpio === "number")
 					.map((item) => ({
 						number: item.gpio,
 						label: `IO${item.gpio}`,
-						category: item.canControl === false ? "system" : "digital",
+						category: item.canControl === false ? "reserved" : "digital",
+						canControl: item.canControl !== false,
 						gpio: item.gpio,
 					}))
 					.sort((a, b) => a.gpio - b.gpio);
+
+				if (nextPins.length !== pins.length) {
+					pins = nextPins;
+					shouldRender = true;
+				} else {
+					for (let i = 0; i < nextPins.length; i++) {
+						if (nextPins[i].gpio !== pins[i].gpio || nextPins[i].canControl !== pins[i].canControl) {
+							pins = nextPins;
+							shouldRender = true;
+							break;
+						}
+					}
+				}
+
+				for (const item of data.pins) {
+					if (typeof item.gpio !== "number") continue;
+					const oldRuntime = pinRuntime.get(item.gpio);
+					const nextRuntime = {
+						mode: typeof item.mode === "string" ? item.mode : "input",
+						value: Boolean(item.value),
+						canControl: item.canControl !== false,
+					};
+					if (
+						!oldRuntime ||
+						oldRuntime.mode !== nextRuntime.mode ||
+						oldRuntime.value !== nextRuntime.value ||
+						oldRuntime.canControl !== nextRuntime.canControl
+					) {
+						shouldRender = true;
+					}
+					pinRuntime.set(item.gpio, {
+						mode: nextRuntime.mode,
+						value: nextRuntime.value,
+						canControl: nextRuntime.canControl,
+					});
+				}
 			}
-			renderPins();
+			if (shouldRender) {
+				renderPins();
+			}
 		} catch {
 			setWsState("disconnected");
 		}
@@ -208,6 +289,23 @@ pinGrid?.addEventListener("change", (event) => {
 	if (!Number.isInteger(gpio)) {
 		return;
 	}
+	pendingModes.set(gpio, {
+		mode: target.value,
+		expiresAt: Date.now() + MODE_PENDING_TTL_MS,
+	});
+	window.setTimeout(() => {
+		const pending = pendingModes.get(gpio);
+		if (pending && Date.now() > pending.expiresAt) {
+			pendingModes.delete(gpio);
+			renderPins();
+		}
+	}, MODE_PENDING_TTL_MS + 50);
+	const runtime = pinRuntime.get(gpio);
+	if (runtime) {
+		runtime.mode = target.value;
+		pinRuntime.set(gpio, runtime);
+	}
+	renderPins();
 	sendWs({ type: "set", gpio, mode: target.value });
 });
 
